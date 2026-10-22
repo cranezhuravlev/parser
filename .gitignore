@@ -1,0 +1,10 @@
+*.json
+*.png
+*.xlsx*
+*.csv
+.ipynb_checkpoints
+.idea
+*.js
+*.txt
+*.html
+*.ipynb
