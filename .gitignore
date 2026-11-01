@@ -5,6 +5,7 @@
 .ipynb_checkpoints
 .idea
 *.js
-*.txt
 *.html
 *.ipynb
+.venv
+*.txt_

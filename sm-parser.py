@@ -10,6 +10,8 @@ from playwright.async_api import async_playwright, Page, ElementHandle
 
 BASE_URL = ["https://napopravku.ru/spb/clinics/sm-klinika-na-dybenko/vrachi/",
             "https://napopravku.ru/spb/clinics/21-vek-medicinskiy-centr/vrachi/#doctors",
+            "https://napopravku.ru/spb/clinics/lakhta-klinika-kruglosutochnaya-mnogoprofilnaya-klinika-i-travmpunkt-primorskogo-rayona/vrachi/#doctors",
+            "https://napopravku.ru/spb/clinics/medsi-set-castnyh-klinik/vrachi/#doctors"
 
             ]
 
@@ -279,7 +281,7 @@ async def parse_page(url, headless: bool = True) -> list[Doctor]:
         for i, card in enumerate(cards):
             try:
                 doc = await parse_card_static(card)
-                with open("output.txt", "a", encoding="utf-8") as f:
+                with open("output.txt_", "a", encoding="utf-8") as f:
                     print(doc, sep='\n', file=f)
                 if not doc.name:
                     continue
