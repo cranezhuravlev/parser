@@ -128,6 +128,40 @@ async def wait_for_cards(
     )
 
 
+async def goto_with_retry(
+    page: Page,
+    url: str,
+    attempts: int = 4,
+    timeout_ms: int = 60000,
+):
+    """Открывает URL с повторами при временных сетевых ошибках."""
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        try:
+            response = await page.goto(
+                url, wait_until="domcontentloaded", timeout=timeout_ms
+            )
+            if response and response.status >= 500 and attempt < attempts:
+                print(
+                    f"  ⚠️ HTTP {response.status}, "
+                    f"повтор {attempt + 1}/{attempts}..."
+                )
+                await page.wait_for_timeout(2000 * attempt)
+                continue
+            return response
+        except Exception as e:
+            last_error = e
+            if attempt >= attempts:
+                raise
+            delay = min(2 ** attempt, 15)
+            print(
+                f"  ⚠️ Ошибка загрузки ({type(e).__name__}), "
+                f"повтор {attempt + 1}/{attempts} через {delay} с..."
+            )
+            await page.wait_for_timeout(delay * 1000)
+    raise last_error
+
+
 async def accept_cookies(page: Page) -> None:
     try:
         cookie_btn = page.locator(
@@ -157,9 +191,18 @@ async def make_context(p, headless: bool):
     )
 
 
-async def get_page(context) -> Page:
-    if context.pages:
-        return context.pages[0]
+async def open_single_page(context) -> Page:
+    """Открывает ровно одну страницу на браузер.
+
+    Рекомендация: один URL обрабатывается в отдельной странице (вкладке).
+    Перед новым филиалом закрываем все старые вкладки, чтобы не открывать
+    несколько страниц одновременно и не создавать лишнюю нагрузку на сайт.
+    """
+    for old_page in list(context.pages):
+        try:
+            await old_page.close()
+        except Exception:
+            pass
     return await context.new_page()
 
 
@@ -403,7 +446,7 @@ async def parse_page(
     doctors: list[Doctor] = []
 
     print(f"\n🌐 Загружаем страницу: {url}")
-    response = await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    response = await goto_with_retry(page, url)
     if response and response.status >= 400:
         if response.status in (403, 429):
             raise BlockedError(f"HTTP {response.status}")
@@ -460,37 +503,82 @@ async def parse_page(
     return doctors
 
 
+OUTPUT_FILE = ROOT / "doctors.json"
+
+
+def load_output() -> list[dict]:
+    if not OUTPUT_FILE.exists():
+        return []
+    try:
+        with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        print(f"⚠️ Не удалось прочитать {OUTPUT_FILE}: {e}")
+        return []
+
+
+def merge_doctors(existing: list[dict], new: list[dict]) -> list[dict]:
+    """Объединяет результаты, заменяя запись того же врача и филиала."""
+    merged: dict[tuple, dict] = {}
+    for item in existing + new:
+        key = (item.get("name"), item.get("filial"))
+        merged[key] = item
+    return list(merged.values())
+
+
 def save_output(output: list[dict]) -> None:
-    with open(ROOT / "doctors.json", "w", encoding="utf-8") as f:
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
 
-async def run(urls: list[str], headless: bool) -> list[dict]:
-    output: list[dict] = []
+async def run(
+    urls: list[str],
+    headless: bool,
+    append: bool = False,
+) -> list[dict]:
+    output: list[dict] = load_output() if append else []
+    if append and output:
+        print(f"📥 В doctors.json уже {len(output)} записей")
 
     async with async_playwright() as p:
         context = await make_context(p, headless)
         try:
             for url in urls:
+                page = await open_single_page(context)
                 try:
-                    data = await parse_page(await get_page(context), url)
-                except BlockedError as e:
-                    print(f"\n⛔ Блокировка: {e}")
-                    if not headless:
-                        raise
-                    print(
-                        "🔁 Перезапускаю Firefox с окном, чтобы пройти проверку..."
-                    )
-                    await context.close()
-                    context = await make_context(p, headless=False)
-                    data = await parse_page(
-                        await get_page(context),
-                        url,
-                        blocked_grace_ms=180000,
-                    )
+                    try:
+                        data = await parse_page(page, url)
+                    except BlockedError as e:
+                        print(f"\n⛔ Блокировка: {e}")
+                        if not headless:
+                            raise
+                        print(
+                            "🔁 Перезапускаю Firefox с окном, "
+                            "чтобы пройти проверку..."
+                        )
+                        await context.close()
+                        context = await make_context(p, headless=False)
+                        page = await open_single_page(context)
+                        data = await parse_page(
+                            page,
+                            url,
+                            blocked_grace_ms=180000,
+                        )
+                except Exception as e:
+                    print(f"\n⚠️ Не удалось собрать {url}: {e}")
+                    print("   Переходим к следующему URL.")
+                    continue
+                finally:
+                    # Одна страница на один URL: закрываем вкладку после сбора.
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
 
-                for d in data:
-                    output.append(asdict(d))
+                output = merge_doctors(
+                    output, [asdict(d) for d in data]
+                )
                 save_output(output)
                 print(
                     f"\n✅ Готово! Собрано врачей: {len(data)} для {url}"
@@ -516,13 +604,20 @@ if __name__ == "__main__":
         dest="urls",
         help="URL для парсинга; можно указать несколько раз",
     )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="добавить результат к существующему doctors.json",
+    )
     args = parser.parse_args()
 
     print("🚀 Запуск парсера...")
     urls = args.urls or BASE_URL
 
     try:
-        result = asyncio.run(run(urls, headless=not args.visible))
+        result = asyncio.run(
+            run(urls, headless=not args.visible, append=args.append)
+        )
     except BlockedError as e:
         print(f"\n❌ Не удалось обойти блокировку: {e}")
         raise SystemExit(2)
