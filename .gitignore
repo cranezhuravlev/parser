@@ -9,3 +9,6 @@
 *.ipynb
 .venv
 *.txt_
+
+data/.firefox-profile/
+__pycache__/
