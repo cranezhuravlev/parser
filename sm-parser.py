@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
-
+from random import randint
 from playwright.async_api import async_playwright, Page, ElementHandle
 
 ROOT = Path(__file__).resolve().parent
@@ -38,6 +38,9 @@ BLOCK_MARKERS = (
     "доступ ограничен",
     "access denied",
 )
+
+def random_lag(lag: int):
+    return randint(int(lag / 2), 3 * lag)
 
 
 class BlockedError(RuntimeError):
@@ -112,7 +115,7 @@ async def wait_for_cards(
                     "Запустите скрипт с флагом --visible и пройдите "
                     "проверку вручную."
                 )
-        await page.wait_for_timeout(1000)
+        await page.wait_for_timeout(random_lag(3_000))
 
     count = await page.locator(".doctor-card-v2").count()
     if count:
@@ -132,21 +135,21 @@ async def goto_with_retry(
     page: Page,
     url: str,
     attempts: int = 4,
-    timeout_ms: int = 60000,
+    timeout_ms: int = 200_000,
 ):
     """Открывает URL с повторами при временных сетевых ошибках."""
     last_error = None
     for attempt in range(1, attempts + 1):
         try:
             response = await page.goto(
-                url, wait_until="domcontentloaded", timeout=timeout_ms
+                url, wait_until="domcontentloaded", timeout=random_lag(timeout_ms)
             )
             if response and response.status >= 500 and attempt < attempts:
                 print(
                     f"  ⚠️ HTTP {response.status}, "
                     f"повтор {attempt + 1}/{attempts}..."
                 )
-                await page.wait_for_timeout(2000 * attempt)
+                await page.wait_for_timeout(random_lag(5_000) * attempt)
                 continue
             return response
         except Exception as e:
@@ -158,7 +161,7 @@ async def goto_with_retry(
                 f"  ⚠️ Ошибка загрузки ({type(e).__name__}), "
                 f"повтор {attempt + 1}/{attempts} через {delay} с..."
             )
-            await page.wait_for_timeout(delay * 1000)
+            await page.wait_for_timeout(random_lag(delay * 1000))
     raise last_error
 
 
@@ -170,7 +173,7 @@ async def accept_cookies(page: Page) -> None:
         ).first
         if await cookie_btn.count() > 0 and await cookie_btn.is_visible():
             await cookie_btn.click()
-            await page.wait_for_timeout(500)
+            await page.wait_for_timeout(random_lag(4_000))
             print("🍪 Куки приняты")
     except Exception as e:
         print(f"⚠️ Не удалось нажать куки: {e}")
@@ -221,10 +224,10 @@ async def load_all_cards(page: Page) -> int:
             break
 
         await btn.scroll_into_view_if_needed()
-        await page.wait_for_timeout(300)
+        await page.wait_for_timeout(random_lag(3_000))
 
         try:
-            await btn.click(timeout=5000)
+            await btn.click(timeout=random_lag(5_000))
         except Exception as e:
             print(f"  клик не удался: {e}")
             break
@@ -233,14 +236,14 @@ async def load_all_cards(page: Page) -> int:
             await page.wait_for_function(
                 "n => document.querySelectorAll('.doctor-card-v2').length > n",
                 arg=count,
-                timeout=10000,
+                timeout=random_lag(20_000),
             )
         except Exception:
             print("  новых карточек не появилось — останавливаемся")
             break
 
         await page.mouse.wheel(0, 2000)
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(random_lag(2_000))
 
         new_count = await page.locator(".doctor-card-v2").count()
         if new_count == prev_count == count:
@@ -459,7 +462,7 @@ async def parse_page(
     print("📜 Прокручиваем страницу...")
     for _ in range(15):
         await page.mouse.wheel(0, 3000)
-        await page.wait_for_timeout(700)
+        await page.wait_for_timeout(random_lag(3_000))
 
     total = await load_all_cards(page)
     print(f"✅ Итого карточек: {total}")
